@@ -15,6 +15,11 @@ namespace Strazh.Domain
         public override string Type => "INVOKE";
     }
 
+    public class ImplementRelationship : Relationship
+    {
+        public override string Type => "IMPLEMENT";
+    }
+
     public class ConstructRelationship : Relationship
     {
         public override string Type => "CONSTRUCT";

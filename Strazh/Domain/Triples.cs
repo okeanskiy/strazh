@@ -1,3 +1,5 @@
+using System;
+
 namespace Strazh.Domain
 {
     public abstract class Triple
@@ -86,6 +88,15 @@ namespace Strazh.Domain
             MethodNode methodB)
             : base(methodA, methodB, new InvokeRelationship())
         { }
+    }
+
+    public class TripleImplement : Triple
+    {
+        public TripleImplement(
+            MethodNode iface,
+            MethodNode implementation)
+            : base(iface, implementation, new ImplementRelationship())
+        {}
     }
 
     public class TripleHave : Triple

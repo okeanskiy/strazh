@@ -2,6 +2,7 @@ using System.Threading.Tasks;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
 using System.Linq;
 using Microsoft.CodeAnalysis;
+using Microsoft.CodeAnalysis.CSharp;
 using Strazh.Domain;
 using Buildalyzer;
 using Buildalyzer.Workspaces;
@@ -10,23 +11,30 @@ using System;
 using Strazh.Database;
 using static Strazh.Analysis.AnalyzerConfig;
 using System.IO;
+using Microsoft.CodeAnalysis.FindSymbols;
 
 namespace Strazh.Analysis
 {
-    public static class Analyzer
+    public class Analyzer
     {
-        public static async Task Analyze(AnalyzerConfig config)
+        private readonly Dictionary<SyntaxTree, Compilation> _compilations = new();
+        private AnalyzerManager _manager;
+        private Solution _solution;
+        
+
+
+        public async Task Analyze(AnalyzerConfig config)
         {
             Console.WriteLine($"Setup analyzer...");
 
-            var manager = config.IsSolutionBased
+            _manager = config.IsSolutionBased
                 ? new AnalyzerManager(config.Solution)
                 : new AnalyzerManager();
 
             var projectAnalyzers = config.IsSolutionBased
-                ? manager.Projects.Values
-                : config.Projects.Select(x => manager.GetProject(x));
-
+                ? _manager.Projects.Values
+                : config.Projects.Select(x => _manager.GetProject(x));
+            
             Console.WriteLine($"Analyzer ready to analyze {projectAnalyzers.Count()} project/s.");
 
             var workspace = new AdhocWorkspace();
@@ -38,29 +46,40 @@ namespace Strazh.Analysis
             {
                 var project = projectAnalyzer.AddToWorkspace(workspace);
                 projects.Add((project, projectAnalyzer));
+                var compilation = await project.GetCompilationAsync();
+                if (compilation != null)
+                {
+                    foreach (var syntaxTree in compilation.SyntaxTrees)
+                    {
+                        _compilations[syntaxTree] = compilation;
+                    }
+                }
             }
+
+            _solution = workspace.CurrentSolution;
+            
             for (var index = 0; index < projects.Count; index++)
             {
-                var triples = await AnalyzeProject(index + 1, projects[index], config.Tier);
+                var triples = await AnalyzeProject(projects[index].Item1, projects[index].Item2, config.Tier);
                 triples = triples.GroupBy(x => x.ToString()).Select(x => x.First()).OrderBy(x => x.NodeA.Label).ToList();
                 await DbManager.InsertData(triples, config.Credentials, config.IsDelete && index == 0);
             }
             workspace.Dispose();
         }
 
-        private static async Task<IList<Triple>> AnalyzeProject(int index, (Project project, IProjectAnalyzer projectAnalyzer) item, Tiers mode)
+        private async Task<IList<Triple>> AnalyzeProject(Project project, IProjectAnalyzer projectAnalyzer, Tiers mode)
         {
-            Console.WriteLine($"Project #{index}:");
-            var root = GetRoot(item.project.FilePath);
+            Console.WriteLine($"Project #{project.Name}:");
+            var root = GetRoot(project.FilePath);
             var rootNode = new FolderNode(root, root);
-            var projectName = GetProjectName(item.project.Name);
+            var projectName = GetProjectName(project.Name);
             Console.WriteLine($"Analyzing {projectName} project...");
 
             var triples = new List<Triple>();
             if (mode == Tiers.All || mode == Tiers.Project)
             {
                 Console.WriteLine($"Analyzing Project tier...");
-                var projectBuild = item.projectAnalyzer.Build().FirstOrDefault();
+                var projectBuild = projectAnalyzer.Build().FirstOrDefault();
                 var projectNode = new ProjectNode(projectName);
                 triples.Add(new TripleIncludedIn(projectNode, rootNode));
                 projectBuild.ProjectReferences.ToList().ForEach(x =>
@@ -77,17 +96,17 @@ namespace Strazh.Analysis
                 Console.WriteLine($"Analyzing Project tier complete.");
             }
 
-            if (item.project.SupportsCompilation
+            if (project.SupportsCompilation
                 && (mode == Tiers.All || mode == Tiers.Code))
             {
                 Console.WriteLine($"Analyzing Code tier...");
-                var compilation = await item.project.GetCompilationAsync();
+                var compilation = await project.GetCompilationAsync();
                 var syntaxTreeRoot = compilation.SyntaxTrees.Where(x => !x.FilePath.Contains("obj"));
                 foreach (var st in syntaxTreeRoot)
                 {
                     var sem = compilation.GetSemanticModel(st);
-                    Extractor.AnalyzeTree<InterfaceDeclarationSyntax>(triples, st, sem, rootNode);
-                    Extractor.AnalyzeTree<ClassDeclarationSyntax>(triples, st, sem, rootNode);
+                    await AnalyzeTree<InterfaceDeclarationSyntax>(triples, st, rootNode);
+                    await AnalyzeTree<ClassDeclarationSyntax>(triples, st, rootNode);
                 }
                 Console.WriteLine($"Analyzing Code tier complete.");
             }
@@ -95,6 +114,145 @@ namespace Strazh.Analysis
             Console.WriteLine($"Analyzing {projectName} project complete.");
             return triples;
         }
+        
+
+        
+
+        /// <summary>
+        /// Entry to analyze class or interface
+        /// </summary>
+        public async Task AnalyzeTree<T>(IList<Triple> triples, SyntaxTree st, FolderNode rootFolder)
+            where T : TypeDeclarationSyntax
+        {
+            var root = st.GetRoot();
+            var filePath = root.SyntaxTree.FilePath;
+            var index = filePath.IndexOf(rootFolder.Name);
+            filePath = index < 0 ? filePath : filePath[index..];
+            var fileName = Extractor.GetName(filePath);
+            var fileNode = new FileNode(filePath, fileName);
+            Extractor.GetFolderChain(filePath, fileNode).ForEach(triples.Add);
+            var declarations = root.DescendantNodes().OfType<T>();
+            foreach (var declaration in declarations)
+            {
+                var semanticModel = _compilations[declaration.SyntaxTree].GetSemanticModel(declaration.SyntaxTree);
+                var node = semanticModel.GetDeclaredSymbol(declaration).CreateTypeNode(declaration);
+                if (node != null)
+                {
+                    triples.Add(new TripleDeclaredAt(node, fileNode));
+                    GetInherits(triples, declaration, node);
+                    await GetMethodsAllAsync(triples, declaration, node);
+                }
+            }
+        }
+
+        /// <summary>
+        /// Type inherited from BaseType
+        /// </summary>
+        public void GetInherits(IList<Triple> triples, TypeDeclarationSyntax declaration, TypeNode node)
+        {
+            if (declaration.BaseList != null)
+            {
+                foreach (var baseTypeSyntax in declaration.BaseList.Types)
+                {
+                    var semanticModel = _compilations[baseTypeSyntax.SyntaxTree].GetSemanticModel(baseTypeSyntax.SyntaxTree);
+                    
+                    var parentNode = semanticModel.GetTypeInfo(baseTypeSyntax.Type).CreateTypeNode();
+                    if (node is ClassNode classNode)
+                    {
+                        triples.Add(new TripleOfType(classNode, parentNode));
+                    }
+                    if (node is InterfaceNode interfaceNode && parentNode is InterfaceNode parentInterfaceNode)
+                    {
+                        triples.Add(new TripleOfType(interfaceNode, parentInterfaceNode));
+                    }
+                }
+            }
+        }
+
+        
+        
+        /// <summary>
+        /// Class or Interface have some method AND some method can call another method AND some method can creates an object of class
+        /// </summary>
+        public async Task GetMethodsAllAsync(IList<Triple> triples, TypeDeclarationSyntax declaration, TypeNode node)
+        {
+            var methods = declaration.DescendantNodes().OfType<MethodDeclarationSyntax>();
+            foreach (var method in methods)
+            {
+                var semanticModel = _compilations[method.SyntaxTree].GetSemanticModel(method.SyntaxTree);
+                var methodSymbol = semanticModel.GetDeclaredSymbol(method);
+                var methodNode = methodSymbol.CreateMethodNode(method);
+
+                var implementation = (await SymbolFinder.FindImplementationsAsync(methodSymbol, _solution)).ToList();
+                if (implementation.Any())
+                {
+                    var symbols = implementation.SelectMany(i => i.DeclaringSyntaxReferences)
+                        .Select(syntaxRef => syntaxRef.GetSyntax())
+                        .Where(syntaxNode => syntaxNode.IsKind(SyntaxKind.MethodDeclaration))
+                        .Select(s => (MethodDeclarationSyntax)s)
+                        .Select(syntaxNode => _compilations[syntaxNode.SyntaxTree].GetSemanticModel(syntaxNode.SyntaxTree).GetDeclaredSymbol(syntaxNode))
+                        .Select(s => s.CreateMethodNode());
+
+                    var implementTriples = symbols.Select(s => new TripleImplement(methodNode, s));
+                    foreach (var implementTriple in implementTriples)
+                    {
+                        triples.Add(implementTriple);
+                    }
+                }
+
+                triples.Add(new TripleHave(node, methodNode));
+
+                foreach (var syntax in method.DescendantNodes().OfType<ExpressionSyntax>())
+                {
+                    var innerSemanticModel = _compilations[syntax.SyntaxTree].GetSemanticModel(syntax.SyntaxTree);
+                    switch (syntax)
+                    {
+                        case ObjectCreationExpressionSyntax creation:
+                            var classNode = innerSemanticModel.GetTypeInfo(creation).CreateClassNode();
+                            triples.Add(new TripleConstruct(methodNode, classNode));
+                            break;
+
+                        case InvocationExpressionSyntax invocation:
+                            if (innerSemanticModel.GetSymbolInfo(invocation).Symbol is IMethodSymbol invokedSymbol)
+                            {
+                                var invokedMethod = invokedSymbol.CreateMethodNode();
+                                triples.Add(new TripleInvoke(methodNode, invokedMethod));
+                            }
+                            break;
+                    }
+                }
+            }
+        }
+
+        public void GetMethodImplementationsAll(IList<Triple> triples, TypeDeclarationSyntax declaration, TypeNode node)
+        {
+            var methods = declaration.DescendantNodes().OfType<MethodDeclarationSyntax>();
+            foreach (var method in methods)
+            {
+                var semanticModel = _compilations[method.SyntaxTree].GetSemanticModel(method.SyntaxTree);
+
+                var methodNode = semanticModel.GetDeclaredSymbol(method).CreateMethodNode(method);
+                triples.Add(new TripleHave(node, methodNode));
+
+                foreach (var syntax in method.DescendantNodes().OfType<ExpressionSyntax>())
+                {
+                    var innerSemanticModel = _compilations[syntax.SyntaxTree].GetSemanticModel(syntax.SyntaxTree);
+                    switch (syntax)
+                    {
+                        case InvocationExpressionSyntax invocation:
+                            if (innerSemanticModel.GetSymbolInfo(invocation).Symbol is IMethodSymbol invokedSymbol)
+                            {
+                                var invokedMethod = invokedSymbol.CreateMethodNode();
+                                triples.Add(new TripleInvoke(methodNode, invokedMethod));
+                            }
+                            break;
+                    }
+                }
+            }
+            
+        }
+        
+        
 
         private static string GetProjectName(string fullName)
             => fullName.Split(Path.DirectorySeparatorChar).Last().Replace(".csproj", "");
