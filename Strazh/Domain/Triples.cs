@@ -10,6 +10,14 @@ namespace Strazh.Domain
 
         protected Triple(Node nodeA, Node nodeB, Relationship relationship)
         {
+            if (nodeA == null)
+                throw new ArgumentNullException(nameof(nodeA));
+            if (nodeB == null)
+                throw new ArgumentNullException(nameof(nodeB));
+            if (relationship == null)
+                throw new ArgumentNullException(nameof(relationship));
+            
+            
             NodeA = nodeA;
             NodeB = nodeB;
             Relationship = relationship;
