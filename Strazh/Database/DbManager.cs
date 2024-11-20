@@ -42,7 +42,7 @@ namespace Strazh.Database
             finally
             {
                 await session.CloseAsync();
-                await driver.CloseAsync();
+                await driver.DisposeAsync();
             }
         }
     }
