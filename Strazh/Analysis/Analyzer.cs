@@ -40,7 +40,7 @@ namespace Strazh.Analysis
             var workspace = new AdhocWorkspace();
             var projects = new List<(Project, IProjectAnalyzer)>();
 
-            var sortedProjectAnalyzers = projectAnalyzers; // TODO sort
+            var sortedProjectAnalyzers = SortProjectAnalyzers(projectAnalyzers);
 
             foreach (var projectAnalyzer in sortedProjectAnalyzers)
             {
@@ -65,6 +65,74 @@ namespace Strazh.Analysis
                 await DbManager.InsertData(triples, config.Credentials, config.IsDelete && index == 0);
             }
             workspace.Dispose();
+        }
+
+        private IEnumerable<IProjectAnalyzer> SortProjectAnalyzers(IEnumerable<IProjectAnalyzer> projectAnalyzers)
+        {
+            // Step 1: Build a dependency graph
+            var graph = new Dictionary<IProjectAnalyzer, List<IProjectAnalyzer>>();
+            var inDegree = new Dictionary<IProjectAnalyzer, int>();
+
+            foreach (var analyzer in projectAnalyzers)
+            {
+                graph[analyzer] = new List<IProjectAnalyzer>();
+                inDegree[analyzer] = 0; // Initialize in-degrees
+            }
+
+            foreach (var analyzer in projectAnalyzers)
+            {
+                var projectReferences = analyzer.Build().FirstOrDefault()?.ProjectReferences;
+
+                if (projectReferences != null)
+                {
+                    foreach (var reference in projectReferences)
+                    {
+                        var dependency = projectAnalyzers.FirstOrDefault(pa => pa.ProjectFile.Path == reference);
+
+                        if (dependency != null)
+                        {
+                            graph[analyzer].Add(dependency);
+                            inDegree[dependency]++;
+                        }
+                    }
+                }
+            }
+
+            // Step 2: Topological sort using Kahn's algorithm
+            var sorted = new List<IProjectAnalyzer>();
+            var queue = new Queue<IProjectAnalyzer>();
+
+            // Enqueue nodes with no incoming edges
+            foreach (var analyzer in projectAnalyzers)
+            {
+                if (inDegree[analyzer] == 0)
+                {
+                    queue.Enqueue(analyzer);
+                }
+            }
+
+            while (queue.Count > 0)
+            {
+                var current = queue.Dequeue();
+                sorted.Add(current);
+
+                foreach (var dependency in graph[current])
+                {
+                    inDegree[dependency]--;
+                    if (inDegree[dependency] == 0)
+                    {
+                        queue.Enqueue(dependency);
+                    }
+                }
+            }
+
+            // Step 3: Return sorted list
+            if (sorted.Count != projectAnalyzers.Count())
+            {
+                throw new InvalidOperationException("Circular dependency detected among projects!");
+            }
+
+            return sorted;
         }
 
         private async Task<IList<Triple>> AnalyzeProject(Project project, IProjectAnalyzer projectAnalyzer, Tiers mode)
