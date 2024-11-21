@@ -20,8 +20,6 @@ namespace Strazh.Analysis
         private readonly Dictionary<SyntaxTree, Compilation> _compilations = new();
         private AnalyzerManager _manager;
         private Solution _solution;
-        
-
 
         public async Task Analyze(AnalyzerConfig config)
         {
@@ -102,7 +100,6 @@ namespace Strazh.Analysis
             var sorted = new List<IProjectAnalyzer>();
             var queue = new Queue<IProjectAnalyzer>();
 
-            // Enqueue nodes with no incoming edges
             foreach (var analyzer in projectAnalyzers)
             {
                 if (inDegree[analyzer] == 0)
@@ -182,9 +179,6 @@ namespace Strazh.Analysis
             Console.WriteLine($"Analyzing {projectName} project complete.");
             return triples;
         }
-        
-
-        
 
         /// <summary>
         /// Entry to analyze class or interface
@@ -236,8 +230,6 @@ namespace Strazh.Analysis
                 }
             }
         }
-
-        
         
         /// <summary>
         /// Class or Interface have some method AND some method can call another method AND some method can creates an object of class
@@ -319,8 +311,6 @@ namespace Strazh.Analysis
             }
             
         }
-        
-        
 
         private static string GetProjectName(string fullName)
             => fullName.Split(Path.DirectorySeparatorChar).Last().Replace(".csproj", "");

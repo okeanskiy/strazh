@@ -15,7 +15,7 @@ namespace Strazh.Database
         {
             if (credentials == null)
             {
-                throw new ArgumentException($"Please, provide credentials.");
+                throw new ArgumentException("Please, provide credentials.");
             }
             Console.WriteLine($"Code Knowledge Graph use \"{credentials.Database}\" Neo4j database.");
             var driver = GraphDatabase.Driver(CONNECTION, AuthTokens.Basic(credentials.User, credentials.Password));
@@ -31,7 +31,8 @@ namespace Strazh.Database
                 Console.WriteLine($"Processing {triples.Count} triples...");
                 foreach (var triple in triples)
                 {
-                    await session.RunAsync(triple.ToString());
+                    var (query, parameters) = triple.GetQueryAndParameters();
+                    await session.RunAsync(query, parameters);
                 }
                 Console.WriteLine($"Processing {triples.Count} triples complete.");
             }

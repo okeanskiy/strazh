@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 
 namespace Strazh.Domain
 {
@@ -27,6 +28,30 @@ namespace Strazh.Domain
 
         public override string ToString()
             => $"MERGE (a:{NodeA.Label} {{ pk: \"{NodeA.Pk}\" }}) ON CREATE SET {NodeA.Set("a")} ON MATCH SET {NodeA.Set("a")} MERGE (b:{NodeB.Label} {{ pk: \"{NodeB.Pk}\" }}) ON CREATE SET {NodeB.Set("b")} ON MATCH SET {NodeB.Set("b")} MERGE (a)-[:{Relationship.Type}]->(b);";
+
+        public (string Query, Dictionary<string, object> Parameters) GetQueryAndParameters()
+        {
+            // Build the query with parameter placeholders
+            var query = $@"
+MERGE (a:{NodeA.Label} {{ pk: $nodeA_pk }})
+ON CREATE SET a += $nodeA_properties
+ON MATCH SET a += $nodeA_properties
+MERGE (b:{NodeB.Label} {{ pk: $nodeB_pk }})
+ON CREATE SET b += $nodeB_properties
+ON MATCH SET b += $nodeB_properties
+MERGE (a)-[:{Relationship.Type}]->(b);";
+
+            // Collect parameters
+            var parameters = new Dictionary<string, object>
+            {
+                { "nodeA_pk", NodeA.Pk },
+                { "nodeA_properties", NodeA.GetPropertiesDictionary() },
+                { "nodeB_pk", NodeB.Pk },
+                { "nodeB_properties", NodeB.GetPropertiesDictionary() },
+            };
+
+            return (query, parameters);
+        }
     }
 
     // Structure
@@ -110,12 +135,6 @@ namespace Strazh.Domain
 
     public class TripleConstruct : Triple
     {
-        //public TripleConstruct(
-        //    ClassNode classA,
-        //    ClassNode classB)
-        //    : base(classA, classB, new ConstructRelationship())
-        //{ }
-
         public TripleConstruct(
             MethodNode methodA,
             ClassNode classB)

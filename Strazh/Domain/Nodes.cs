@@ -1,3 +1,4 @@
+using System.Collections.Generic;
 using System.Linq;
 
 namespace Strazh.Domain
@@ -29,37 +30,57 @@ namespace Strazh.Domain
 
         public virtual string Set(string node)
             => $"{node}.pk = \"{Pk}\", {node}.fullName = \"{FullName}\", {node}.name = \"{Name}\"";
-    }
 
-    // Code
+        public virtual IDictionary<string, object> GetPropertiesDictionary()
+        {
+            return new Dictionary<string, object>
+            {
+                { "pk", Pk },
+                { "fullName", FullName },
+                { "name", Name }
+            };
+        }
+    }
 
     public abstract class CodeNode : Node
     {
-        public CodeNode(string fullName, string name, string[] modifiers = null)
+        public CodeNode(string fullName, string name, string[] modifiers = null, string sourceCode = null)
             : base(fullName, name)
         {
-
             Modifiers = modifiers == null ? "" : string.Join(", ", modifiers);
+            SourceCode = sourceCode;
         }
 
         public string Modifiers { get; }
 
+        public string SourceCode { get; }
+
         public override string Set(string node)
-            => $"{base.Set(node)}{(string.IsNullOrEmpty(Modifiers) ? "" : $", {node}.modifiers = \"{Modifiers}\"")}";
+            => $"{base.Set(node)}" +
+               $"{(string.IsNullOrEmpty(Modifiers) ? "" : $", {node}.modifiers = \"{Modifiers}\"")}" +
+               $"{(string.IsNullOrEmpty(SourceCode) ? "" : $", {node}.sourceCode = \"{SourceCode}\"")}";
+
+        public override IDictionary<string, object> GetPropertiesDictionary()
+        {
+            var properties = base.GetPropertiesDictionary();
+            properties.Add("modifiers", Modifiers);
+            properties.Add("sourceCode", SourceCode);
+            return properties;
+        }
     }
 
     public abstract class TypeNode : CodeNode
     {
-        public TypeNode(string fullName, string name, string[] modifiers = null)
-            : base(fullName, name, modifiers)
+        public TypeNode(string fullName, string name, string[] modifiers = null, string sourceCode = null)
+            : base(fullName, name, modifiers, sourceCode)
         {
         }
     }
 
     public class ClassNode : TypeNode
     {
-        public ClassNode(string fullName, string name, string[] modifiers = null)
-            : base(fullName, name, modifiers)
+        public ClassNode(string fullName, string name, string[] modifiers = null, string sourceCode = null)
+            : base(fullName, name, modifiers, sourceCode)
         {
         }
 
@@ -68,8 +89,8 @@ namespace Strazh.Domain
 
     public class InterfaceNode : TypeNode
     {
-        public InterfaceNode(string fullName, string name, string[] modifiers = null)
-            : base(fullName, name, modifiers)
+        public InterfaceNode(string fullName, string name, string[] modifiers = null, string sourceCode = null)
+            : base(fullName, name, modifiers, sourceCode)
         {
         }
 
@@ -78,8 +99,8 @@ namespace Strazh.Domain
 
     public class MethodNode : CodeNode
     {
-        public MethodNode(string fullName, string name, (string name, string type)[] args, string returnType, string[] modifiers = null)
-            : base(fullName, name, modifiers)
+        public MethodNode(string fullName, string name, (string name, string type)[] args, string returnType, string[] modifiers = null, string sourceCode = null)
+            : base(fullName, name, modifiers, sourceCode)
         {
             Arguments = string.Join(", ", args.Select(x => $"{x.type} {x.name}"));
             ReturnType = returnType;
@@ -95,13 +116,19 @@ namespace Strazh.Domain
         public override string Set(string node)
             => $"{base.Set(node)}, {node}.returnType = \"{ReturnType}\", {node}.arguments = \"{Arguments}\"";
 
+        public override IDictionary<string, object> GetPropertiesDictionary()
+        {
+            var properties = base.GetPropertiesDictionary();
+            properties.Add("returnType", ReturnType);
+            properties.Add("arguments", Arguments);
+            return properties;
+        }
+
         protected override void SetPrimaryKey()
         {
             Pk = $"{FullName}{Arguments}{ReturnType}".GetHashCode().ToString();
         }
     }
-
-    // Structure
 
     public class FileNode : Node
     {

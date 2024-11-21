@@ -69,11 +69,13 @@ namespace Strazh.Analysis
             var fullName = symbol.ContainingNamespace.GetNamespaceName($"{symbol.ContainingType.Name}.{symbol.Name}");
             var args = symbol.Parameters.Select(x => (name: x.Name, type: x.Type.ToString())).ToArray();
             var returnType = symbol.ReturnType.ToString();
+            var sourceCode = declaration?.ToString();
             return new MethodNode(fullName,
                 symbol.Name,
                 args,
                 returnType,
-                declaration?.Modifiers.MapModifiers());
+                declaration?.Modifiers.MapModifiers(),
+                sourceCode);
         }
 
         public static string GetName(string filePath)
