@@ -73,8 +73,9 @@ namespace Strazh
                     return;
                 }
 
-                Console.WriteLine($"Brewing a Code Knowledge Graph of tier \"{config.Tier}\".");                
-                await Analyzer.Analyze(config);
+                Console.WriteLine($"Brewing a Code Knowledge Graph of tier \"{config.Tier}\".");
+                var analyser = new Analyzer();
+                await analyser.Analyze(config);
                 Console.WriteLine("Code Knowledge Graph created.");
             }
             catch (Exception ex)
