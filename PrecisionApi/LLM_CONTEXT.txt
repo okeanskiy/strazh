@@ -1,0 +1,56 @@
+Project: PrecisionApi - Convert Strazh CLI to a JSON-returning API.
+
+Core Task:
+Analyze a C# codebase provided as a .zip file and return its graph structure (nodes and edges) as a JSON response.
+
+Key Design Decisions & Plan:
+1.  API Endpoint:
+    *   Accepts a POST request with a .zip file (`multipart/form-data`).
+    *   No explicit solution/project path parameters in the request.
+    *   No 'tier' parameter; always analyze in "all" mode.
+    *   No credentials or other configurations needed for the API endpoint itself.
+
+2.  Preprocessing (.zip handling & project detection):
+    *   Extract the .zip to a temporary unique directory.
+    *   Scan this directory to find:
+        *   A single .sln file (preferred).
+        *   Or, one or more .csproj files (if no .sln).
+    *   This determines the input for the analysis engine.
+
+3.  Analysis Engine (largely reused/adapted from Strazh):
+    *   Core analysis logic will reside in an `AnalysisService`.
+    *   Utilize `Buildalyzer` and `Buildalyzer.Workspaces` to load and analyze projects/solutions.
+    *   Utilize `Microsoft.CodeAnalysis` (Roslyn) for semantic and syntactic analysis.
+    *   Reuse `Strazh.Domain` classes: `Node` (and subclasses like `ClassNode`, `MethodNode`, `FileNode`, etc.), `Relationship` (and subclasses), `Triple` (and subclasses). These will be copied or referenced.
+    *   Reuse `Strazh.Analysis.Extractor` class for detailed code parsing (finding types, methods, inheritance, invocations, constructions).
+    *   Adapt parts of `Strazh.Analysis.Analyzer` (like `AnalyzeProject`, `GetAnalysisContext`) for the new service.
+    *   Crucially, retain the logic for deduplicating `Triple` objects (e.g., `triples.GroupBy(x => x.ToString()).Select(x => x.First())`) before final JSON transformation.
+
+4.  JSON Output Structure:
+    *   Format: `{ "nodes": [], "edges": [] }`
+    *   Nodes: `[{ "id": "pk_value", "label": "NodeType", "name": "...", "fullName": "...", ... (other relevant properties like Modifiers, Arguments, ReturnType, Version) }]`
+        *   `id` comes from `Node.Pk`.
+        *   `label` comes from `Node.Label`.
+    *   Edges: `[{ "source": "nodeA_pk", "target": "nodeB_pk", "type": "RELATIONSHIP_TYPE" }]`
+        *   `source` from `Triple.NodeA.Pk`.
+        *   `target` from `Triple.NodeB.Pk`.
+        *   `type` from `Triple.Relationship.Type`.
+
+5.  Project Structure (PrecisionApi):
+    *   `dotnet new webapi -n PrecisionApi` (already done).
+    *   Controllers: e.g., `AnalysisController`.
+    *   Services: e.g., `AnalysisService`.
+    *   Domain: Copied/adapted from `Strazh.Domain`.
+    *   Extractor: Copied/adapted from `Strazh.Analysis.Extractor`.
+    *   (No `DbManager` or Neo4j-specific code from Strazh).
+
+6.  NuGet Packages for PrecisionApi:
+    *   `Buildalyzer`
+    *   `Buildalyzer.Workspaces`
+    *   `Microsoft.CodeAnalysis.CSharp.Workspaces`
+    *   (Implicitly `Microsoft.CodeAnalysis.Common`, `Microsoft.CodeAnalysis.CSharp`)
+
+Next Steps discussed:
+1.  Add NuGet packages to `PrecisionApi.csproj`.
+2.  Define `AnalysisController` and the ZIP file upload endpoint.
+3.  Implement `AnalysisService` and supporting classes. 

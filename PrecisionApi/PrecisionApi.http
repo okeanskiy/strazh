@@ -1,0 +1,6 @@
+@PrecisionApi_HostAddress = http://localhost:5014
+
+GET {{PrecisionApi_HostAddress}}/weatherforecast/
+Accept: application/json
+
+###
