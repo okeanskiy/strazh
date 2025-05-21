@@ -13,7 +13,7 @@ Key Design Decisions & Plan:
 2.  Preprocessing (.zip handling & project detection):
     *   Extract the .zip to a temporary unique directory.
     *   Scan this directory to find:
-        *   A single .sln file (preferred).
+        *   A single .sln file (preferred, first found or shallowest if multiple).
         *   Or, one or more .csproj files (if no .sln).
     *   This determines the input for the analysis engine.
 
@@ -21,36 +21,34 @@ Key Design Decisions & Plan:
     *   Core analysis logic will reside in an `AnalysisService`.
     *   Utilize `Buildalyzer` and `Buildalyzer.Workspaces` to load and analyze projects/solutions.
     *   Utilize `Microsoft.CodeAnalysis` (Roslyn) for semantic and syntactic analysis.
-    *   Reuse `Strazh.Domain` classes: `Node` (and subclasses like `ClassNode`, `MethodNode`, `FileNode`, etc.), `Relationship` (and subclasses), `Triple` (and subclasses). These will be copied or referenced.
-    *   Reuse `Strazh.Analysis.Extractor` class for detailed code parsing (finding types, methods, inheritance, invocations, constructions).
+    *   `PrecisionApi.Domain` classes (copied from Strazh): `Node`, `Relationship`, `Triple` and subclasses. `Node` equality based on `Pk`. (Docs: `Documentation/Domain.md`)
+    *   `PrecisionApi.Analysis.Extractor` class (copied from Strazh): For detailed code parsing. (Docs: `Documentation/Analysis.md`)
     *   Adapt parts of `Strazh.Analysis.Analyzer` (like `AnalyzeProject`, `GetAnalysisContext`) for the new service.
-    *   Crucially, retain the logic for deduplicating `Triple` objects (e.g., `triples.GroupBy(x => x.ToString()).Select(x => x.First())`) before final JSON transformation.
+    *   Deduplicate `Triple` objects using a key like `$"{Triple.NodeA.Pk}_{Triple.Relationship.Type}_{Triple.NodeB.Pk}"` before final JSON transformation.
 
 4.  JSON Output Structure:
     *   Format: `{ "nodes": [], "edges": [] }`
-    *   Nodes: `[{ "id": "pk_value", "label": "NodeType", "name": "...", "fullName": "...", ... (other relevant properties like Modifiers, Arguments, ReturnType, Version) }]`
-        *   `id` comes from `Node.Pk`.
-        *   `label` comes from `Node.Label`.
+    *   Nodes: `[{ "id": "pk_value", "label": "NodeType", "name": "...", "fullName": "...", ... }]`
     *   Edges: `[{ "source": "nodeA_pk", "target": "nodeB_pk", "type": "RELATIONSHIP_TYPE" }]`
-        *   `source` from `Triple.NodeA.Pk`.
-        *   `target` from `Triple.NodeB.Pk`.
-        *   `type` from `Triple.Relationship.Type`.
 
 5.  Project Structure (PrecisionApi):
-    *   `dotnet new webapi -n PrecisionApi` (already done).
-    *   Controllers: e.g., `AnalysisController`.
-    *   Services: e.g., `AnalysisService`.
-    *   Domain: Copied/adapted from `Strazh.Domain`.
-    *   Extractor: Copied/adapted from `Strazh.Analysis.Extractor`.
-    *   (No `DbManager` or Neo4j-specific code from Strazh).
+    *   `Controllers/AnalysisController.cs` (created, DI for service set up). (Docs: `Documentation/AnalysisController.md`)
+    *   `Services/AnalysisService.cs` (created, file discovery & Roslyn context setup in progress). (Docs: `Documentation/AnalysisService.md`)
+    *   `Domain/` (Strazh domain classes copied, namespace `PrecisionApi.Domain`).
+    *   `Analysis/` (Strazh Extractor copied, namespace `PrecisionApi.Analysis`).
+    *   `Documentation/` (contains `AnalysisController.md`, `AnalysisService.md`, `Domain.md`, `Analysis.md`).
 
-6.  NuGet Packages for PrecisionApi:
+6.  NuGet Packages for PrecisionApi (added to .csproj, `dotnet restore` done):
     *   `Buildalyzer`
     *   `Buildalyzer.Workspaces`
     *   `Microsoft.CodeAnalysis.CSharp.Workspaces`
-    *   (Implicitly `Microsoft.CodeAnalysis.Common`, `Microsoft.CodeAnalysis.CSharp`)
 
-Next Steps discussed:
-1.  Add NuGet packages to `PrecisionApi.csproj`.
-2.  Define `AnalysisController` and the ZIP file upload endpoint.
-3.  Implement `AnalysisService` and supporting classes. 
+Next Major Phase: Implement `AnalysisService` Core Logic (In Progress):
+1.  Copy Strazh Domain & Extractor classes (Done, namespaces adjusted, robustness enhanced).
+2.  Implement project/solution file discovery in `AnalysisService` (Done).
+3.  Initialize `AnalyzerManager` & Adapt `GetRoslynAnalysisContext` (Done).
+4.  Adapt Strazh.Analysis.Analyzer's project iteration & analysis logic into `AnalysisService` (using copied Extractor) to collect Triples (Next).
+5.  Implement Triple deduplication.
+6.  Implement JSON transformation of Triples to the nodes/edges structure.
+7.  Implement robust error handling and logging in `AnalysisService`.
+8.  Address temporary directory cleanup in `AnalysisController` for production. 
