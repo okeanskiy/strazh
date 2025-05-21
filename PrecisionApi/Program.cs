@@ -21,6 +21,12 @@ if (app.Environment.IsDevelopment())
 
 app.UseHttpsRedirection();
 
+app.UseRouting();
+
+// You might have app.UseAuthentication(); and app.UseAuthorization(); here in a more complex app
+
+app.MapControllers();
+
 var summaries = new[]
 {
     "Freezing", "Bracing", "Chilly", "Cool", "Mild", "Warm", "Balmy", "Hot", "Sweltering", "Scorching"
@@ -38,8 +44,8 @@ app.MapGet("/weatherforecast", () =>
         .ToArray();
     return forecast;
 })
-.WithName("GetWeatherForecast")
-.WithOpenApi();
+.WithName("GetWeatherForecast");
+// .WithOpenApi(); // Commented out to resolve build error
 
 app.Run();
 

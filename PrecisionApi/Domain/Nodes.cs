@@ -6,22 +6,29 @@ namespace PrecisionApi.Domain
     {
         public abstract string Label { get; }
 
-        public virtual string FullName { get; }
+        public virtual string FullName { get; set; } = string.Empty;
 
-        public virtual string Name { get; }
+        public virtual string Name { get; set; } = string.Empty;
 
-        public virtual string Pk { get; protected set; }
+        public virtual string Pk { get; protected set; } = string.Empty;
 
+        // Constructor for typical instantiation
         public Node(string fullName, string name)
         {
-            FullName = fullName;
-            Name = name;
+            FullName = fullName ?? string.Empty;
+            Name = name ?? string.Empty;
             SetPrimaryKey();
         }
 
-        protected virtual void SetPrimaryKey()
+        // Parameterless constructor for object initializer scenarios
+        protected Node()
         {
-            // Ensure Pk is never null or empty for hash code generation
+            // Pk will be set by SetPrimaryKey or re-set by derived classes if needed
+            // FullName and Name are initialized to string.Empty by their property initializers
+        }
+
+        public virtual void SetPrimaryKey()
+        {
             Pk = (FullName ?? string.Empty).GetHashCode().ToString();
         }
 
@@ -31,12 +38,11 @@ namespace PrecisionApi.Domain
         public string ToInspection() =>
             $$"""{ "Pk": {{(Pk ?? string.Empty).Inspect()}}, "Label": {{(Label ?? string.Empty).Inspect()}}, "FullName": {{(FullName ?? string.Empty).Inspect()}}, "Name": {{(Name ?? string.Empty).Inspect()}} }""";
 
-        // For use in HashSet/Dictionary to ensure uniqueness based on Pk
-        public override bool Equals(object obj)
+        public override bool Equals(object? obj) // CS8765 addressed: object? obj
         {
             if (obj is Node otherNode)
             {
-                return Pk == otherNode.Pk;
+                return !string.IsNullOrEmpty(Pk) && Pk == otherNode.Pk;
             }
             return false;
         }
@@ -49,13 +55,14 @@ namespace PrecisionApi.Domain
 
     public abstract class CodeNode : Node
     {
-        public CodeNode(string fullName, string name, string[] modifiers = null)
+        public CodeNode(string fullName, string name, string[]? modifiers = null)
             : base(fullName, name)
         {
             Modifiers = modifiers == null ? string.Empty : string.Join(", ", modifiers);
         }
+        protected CodeNode() { Modifiers = string.Empty; } // For initializers
 
-        public string Modifiers { get; }
+        public string Modifiers { get; protected set; }
 
         public override string Set(string node)
             => $"{base.Set(node)}{(string.IsNullOrEmpty(Modifiers) ? "" : $", {node}.modifiers = \"{Modifiers}\"")}";
@@ -63,35 +70,38 @@ namespace PrecisionApi.Domain
 
     public abstract class TypeNode : CodeNode
     {
-        public TypeNode(string fullName, string name, string[] modifiers = null)
+        public TypeNode(string fullName, string name, string[]? modifiers = null)
             : base(fullName, name, modifiers)
         {
         }
+        protected TypeNode() { } // For initializers
     }
 
     public class ClassNode : TypeNode
     {
-        public ClassNode(string fullName, string name, string[] modifiers = null)
+        public ClassNode(string fullName, string name, string[]? modifiers = null)
             : base(fullName, name, modifiers)
         {
         }
+        public ClassNode() { } // For initializers
 
         public override string Label { get; } = "Class";
     }
 
     public class InterfaceNode : TypeNode
     {
-        public InterfaceNode(string fullName, string name, string[] modifiers = null)
+        public InterfaceNode(string fullName, string name, string[]? modifiers = null)
             : base(fullName, name, modifiers)
         {
         }
+        public InterfaceNode() { } // For initializers
 
         public override string Label { get; } = "Interface";
     }
 
     public class MethodNode : CodeNode
     {
-        public MethodNode(string fullName, string name, (string name, string type)[] args, string returnType, string[] modifiers = null)
+        public MethodNode(string fullName, string name, (string name, string type)[]? args, string returnType, string[]? modifiers = null)
             : base(fullName, name, modifiers)
         {
             var argStrings = args?.Select(x => $"{x.type} {x.name}") ?? Enumerable.Empty<string>();
@@ -99,15 +109,20 @@ namespace PrecisionApi.Domain
             ReturnType = returnType ?? string.Empty;
             SetPrimaryKey(); // Recalculate PK with new properties
         }
+        public MethodNode() 
+        { 
+            Arguments = string.Empty; 
+            ReturnType = string.Empty; 
+        } // For initializers
 
         public override string Label { get; } = "Method";
-        public string Arguments { get; }
-        public string ReturnType { get; }
+        public string Arguments { get; protected set; }
+        public string ReturnType { get; protected set; }
 
         public override string Set(string node)
             => $"{base.Set(node)}, {node}.returnType = \"{ReturnType}\", {node}.arguments = \"{Arguments}\"";
 
-        protected override void SetPrimaryKey()
+        public override void SetPrimaryKey()
         {
             Pk = $"{(FullName ?? string.Empty)}{(Arguments ?? string.Empty)}{(ReturnType ?? string.Empty)}".GetHashCode().ToString();
         }
@@ -117,32 +132,42 @@ namespace PrecisionApi.Domain
     {
         public FileNode(string fullName, string name)
             : base(fullName, name) { }
+        public FileNode() { } // For initializers
 
         public override string Label { get; } = "File";
     }
 
     public class FolderNode : Node
     {
+        // Constructor used by AnalysisService object initializer for projectFolderNode
+        public FolderNode() : base() { }
+
+        // Standard constructor if direct instantiation with parameters is needed
         public FolderNode(string fullName, string name)
             : base(fullName, name) { }
 
         public override string Label { get; } = "Folder";
+
+        // Allow Pk to be set directly after FullName and Name are set by initializer
+        public void SetPrimaryKey(string pkValue)
+        {
+            Pk = pkValue ?? string.Empty;
+        }
     }
 
     public class SolutionNode : Node
     {
         public SolutionNode(string name)
-            : base(name, name) { } // FullName and Name are the same for Solution
+            : base(name, name) { } 
+        public SolutionNode() { } // For initializers
         public override string Label => "Solution";
     }
 
     public class ProjectNode : Node
     {
-        public ProjectNode(string name)
-            : this(name, name) { } // Often FullName and Name are the same for Project initially
-
         public ProjectNode(string fullName, string name)
             : base(fullName, name) { }
+        public ProjectNode() { } // For initializers
 
         public override string Label { get; } = "Project";
     }
@@ -155,14 +180,15 @@ namespace PrecisionApi.Domain
             Version = version ?? string.Empty;
             SetPrimaryKey(); // Recalculate PK with new properties
         }
+        public PackageNode() { Version = string.Empty; } // For initializers
 
         public override string Label { get; } = "Package";
-        public string Version { get; }
+        public string Version { get; protected set; }
 
         public override string Set(string node)
             => $"{base.Set(node)}, {node}.version = \"{Version}\"";
 
-        protected override void SetPrimaryKey()
+        public override void SetPrimaryKey()
         {
             Pk = $"{(FullName ?? string.Empty)}{(Version ?? string.Empty)}".GetHashCode().ToString();
         }

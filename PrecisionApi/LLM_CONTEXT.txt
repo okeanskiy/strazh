@@ -43,12 +43,35 @@ Key Design Decisions & Plan:
     *   `Buildalyzer.Workspaces`
     *   `Microsoft.CodeAnalysis.CSharp.Workspaces`
 
-Next Major Phase: Implement `AnalysisService` Core Logic (In Progress):
-1.  Copy Strazh Domain & Extractor classes (Done, namespaces adjusted, robustness enhanced).
-2.  Implement project/solution file discovery in `AnalysisService` (Done).
-3.  Initialize `AnalyzerManager` & Adapt `GetRoslynAnalysisContext` (Done).
-4.  Adapt Strazh.Analysis.Analyzer's project iteration & analysis logic into `AnalysisService` (using copied Extractor) to collect Triples (Next).
-5.  Implement Triple deduplication.
-6.  Implement JSON transformation of Triples to the nodes/edges structure.
-7.  Implement robust error handling and logging in `AnalysisService`.
-8.  Address temporary directory cleanup in `AnalysisController` for production. 
+Current Status & Next Phase: Refining Analysis & Fixing Key Issues
+
+The core pipeline for uploading a ZIP, discovering projects, performing analysis on at least one project, collecting triples, deduplicating triples, and transforming them into the specified JSON output (nodes/edges) is **functional**. Initial manual testing with Postman confirms the API endpoint is reachable and returns a graph.
+
+Key Issues Found During Testing:
+1.  **Incomplete Multi-Project Analysis:** When multiple `.csproj` files are discovered (in the absence of a `.sln` file), logs and output (`analyzedProjectCount: 1`) indicate that only the first project is fully processed by the Roslyn workspace logic in `AnalysisService.GetRoslynAnalysisContext`. Subsequent projects, though built by Buildalyzer, are reported as "already in Roslyn workspace or duplicate" and are not included in the main Roslyn analysis phase for their internal structure.
+2.  **Duplicate Method Nodes in Output:** Methods from referenced projects (e.g., `Strazh.Tests.ProjectB.Math.IMathService.Sum`) appear multiple times as distinct nodes in the output JSON, each with a different `id` (Pk). This suggests a potential issue with the canonicality of `MethodNode.Pk` generation or a flaw in how nodes are deduplicated before JSON transformation if the Pks are indeed meant to be identical.
+
+Next Actions to Resolve Issues:
+
+1.  **Fully Implement Multi-Project Analysis (for .csproj scenarios):**
+    *   **File:** `PrecisionApi/Services/AnalysisService.cs`
+    *   **Method:** `GetRoslynAnalysisContext`
+    *   **Task:** Investigate and correct the logic for adding multiple projects (when discovered as individual .csproj files without a .sln) to the `AdhocWorkspace`. Ensure all projects successfully built by Buildalyzer are added to `RoslynAnalysisContext.Projects` and are subsequently analyzed by `AnalyzeCodebaseAsync`. Determine why subsequent projects are currently flagged as "duplicate" or not fully incorporated.
+
+2.  **Resolve Duplicate MethodNode Issue:**
+    *   **Files & Focus:**
+        *   `PrecisionApi/Domain/Nodes.cs` (specifically `MethodNode.SetPrimaryKey()`)
+        *   `PrecisionApi/Services/AnalysisService.cs` (specifically `TransformTriplesToJsonObjects()` node deduplication part)
+        *   `PrecisionApi/Analysis/Extractor.cs` (specifically `CreateMethodNode()` for how method name components are generated)
+    *   **Task (Pk Canonicality):** Ensure `MethodNode.Pk` is generated consistently and canonically. The Pk relies on `FullName`, `Arguments`, and `ReturnType`. Review how these components are generated, especially for methods from referenced assemblies (metadata). Consider using Roslyn's `ISymbol.ToDisplayString()` with consistent `SymbolDisplayFormat` options to generate canonical string representations for types in signatures, ensuring that identical methods always yield identical Pk components.
+    *   **Task (Node Deduplication):** Confirm that the `seenNodePks` HashSet in `TransformTriplesToJsonObjects` effectively deduplicates nodes if their Pks are correctly identical.
+
+Addressing Remaining Nullability Warnings (Lower Priority but Good Practice):
+*   Once the above functional issues are resolved, revisit and fix the remaining `CS8603` (Possible null reference return) warnings, primarily in `Extractor.cs` and `IInspectable.cs`, to improve code robustness.
+*   Address `CS8619` (Nullability of reference types in value of type 'List<IAnalyzerResult?>' doesn't match target type 'List<IAnalyzerResult>') in `AnalysisService.cs`.
+
+Future Considerations (Post-Issue Resolution):
+*   Implement robust, configurable logging (e.g., using `ILogger`) to replace `Console.WriteLine`.
+*   Implement robust temporary directory cleanup in `AnalysisController`.
+*   Develop automated tests.
+*   Revisit OpenAPI/Swagger setup if `.WithOpenApi()` is desired for endpoints. 

@@ -7,6 +7,7 @@ using Microsoft.CodeAnalysis.CSharp; // Potentially for CSharpCompilationOptions
 using System.Collections.Concurrent; // For ConcurrentBag if adapting GetAnalysisContext closely
 using System.Collections.Generic; // For List<T>
 using System.IO; // For Path operations
+using Buildalyzer.Workspaces; // Added for AddToWorkspace
 
 // Domain and Analysis namespaces will be needed once we integrate Extractor and Triple generation
 using PrecisionApi.Domain;
@@ -18,9 +19,9 @@ namespace PrecisionApi.Services;
 public class RoslynAnalysisContext : IDisposable
 {
     public AdhocWorkspace Workspace { get; }
-    public List<(Project RoslynProject, IAnalyzerResult BuildalyzerResult)> Projects { get; }
+    public List<(Microsoft.CodeAnalysis.Project RoslynProject, IAnalyzerResult BuildalyzerResult)> Projects { get; }
 
-    public RoslynAnalysisContext(AdhocWorkspace workspace, List<(Project, IAnalyzerResult)> projects)
+    public RoslynAnalysisContext(AdhocWorkspace workspace, List<(Microsoft.CodeAnalysis.Project, IAnalyzerResult)> projects)
     {
         Workspace = workspace;
         Projects = projects;
@@ -114,8 +115,12 @@ public class AnalysisService
                     continue;
                 }
 
-                var projectFolderNode = new FolderNode { Name = Path.GetFileName(projectRootPath), FullName = projectRootPath };
-                projectFolderNode.SetPrimaryKey(projectRootPath); // Set Pk for the FolderNode
+                var projectFolderNode = new FolderNode 
+                {
+                    FullName = projectRootPath, 
+                    Name = Path.GetFileName(projectRootPath) ?? projectRootPath 
+                };
+                projectFolderNode.SetPrimaryKey(); // Call base SetPrimaryKey after properties are set
 
                 var compilation = await roslynProject.GetCompilationAsync();
                 if (compilation == null)
@@ -130,7 +135,7 @@ public class AnalysisService
                     var semanticModel = compilation.GetSemanticModel(syntaxTree);
                     try
                     {
-                        Extractor.AnalyzeTree<Microsoft.CodeAnalysis.SyntaxNode>(allTriples, syntaxTree, semanticModel, projectFolderNode);
+                        Extractor.AnalyzeTree(allTriples, syntaxTree, semanticModel, projectFolderNode);
                         Console.WriteLine($"Analyzed syntax tree: {syntaxTree.FilePath ?? "in-memory tree"} for project {roslynProject.Name}. Current triples count: {allTriples.Count}");
                     }
                     catch (Exception ex)
@@ -151,7 +156,7 @@ public class AnalysisService
             var (nodes, edges) = TransformTriplesToJsonObjects(deduplicatedTriples);
             Console.WriteLine($"Transformed to {nodes.Count} nodes and {edges.Count} edges.");
 
-            await Task.Delay(100); 
+            await System.Threading.Tasks.Task.Delay(100); // Qualified Task.Delay
 
             var finalResult = new 
             {
@@ -184,7 +189,7 @@ public class AnalysisService
     {
         if (manager == null) throw new ArgumentNullException(nameof(manager));
 
-        var projectResults = new ConcurrentBag<(Project, IAnalyzerResult)>();
+        var projectResults = new ConcurrentBag<(Microsoft.CodeAnalysis.Project, IAnalyzerResult)>();
         AdhocWorkspace workspace = new AdhocWorkspace();
 
         List<IAnalyzerResult> buildalyzerResults;
@@ -197,9 +202,16 @@ public class AnalysisService
             {
                 Console.WriteLine($"Building project (override): {Path.GetFileName(projectPath)} - starting");
                 var projectAnalyzer = manager.GetProject(projectPath);
-                var result = projectAnalyzer.Build().FirstOrDefault();
-                if (result != null) buildalyzerResults.Add(result);
-                Console.WriteLine($"Building project (override): {Path.GetFileName(projectPath)} - finished");
+                var buildResult = projectAnalyzer.Build().FirstOrDefault(r => r.Succeeded);
+                if (buildResult != null)
+                {
+                    buildalyzerResults.Add(buildResult);
+                    Console.WriteLine($"Building project (override): {Path.GetFileName(projectPath)} - finished (succeeded)");
+                }
+                else
+                {
+                    Console.WriteLine($"Building project (override): {Path.GetFileName(projectPath)} - finished (failed or no results)");
+                }
             }
         }
         else if (!string.IsNullOrEmpty(manager.SolutionFilePath))
@@ -236,18 +248,44 @@ public class AnalysisService
             return null;
         }
 
+        // Add each built project to the workspace. If the project (by FilePath) is already present (e.g., added implicitly
+        // when another project with a reference was loaded), reuse the existing instance instead of attempting to add it
+        // again which would throw an exception.
+
+        var processedProjectPaths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
         foreach (IAnalyzerResult result in buildalyzerResults)
         {
-            if (workspace.CurrentSolution.Projects.All(p => p.FilePath != result.ProjectFilePath))
+            if (!processedProjectPaths.Add(result.ProjectFilePath))
             {
-                var roslynProject = result.AddToWorkspace(workspace, true); // Add to workspace and load documents
-                projectResults.Add((roslynProject, result));
+                // We already processed this path in a previous iteration.
+                continue;
+            }
+
+            Microsoft.CodeAnalysis.Project? roslynProject = null;
+            try
+            {
+                roslynProject = result.AddToWorkspace(workspace, true);
                 Console.WriteLine($"Added project to Roslyn workspace: {roslynProject.Name}");
             }
-            else
+            catch (Exception addEx)
             {
-                Console.WriteLine($"Project already in Roslyn workspace or duplicate: {result.ProjectFilePath}");
+                // Adding failed (likely because the project already exists). Attempt to retrieve the existing project.
+                roslynProject = workspace.CurrentSolution.Projects
+                                       .FirstOrDefault(p => string.Equals(p.FilePath, result.ProjectFilePath, StringComparison.OrdinalIgnoreCase));
+
+                if (roslynProject != null)
+                {
+                    Console.WriteLine($"Project already existed in workspace, using existing instance: {roslynProject.Name} ({result.ProjectFilePath})");
+                }
+                else
+                {
+                    Console.WriteLine($"Failed to add project {result.ProjectFilePath} and could not find existing instance: {addEx.Message}");
+                    continue; // Skip this project entirely.
+                }
             }
+
+            projectResults.Add((roslynProject, result));
         }
         
         if (!projectResults.Any())

@@ -65,30 +65,41 @@ namespace PrecisionApi.Analysis // Adjusted namespace
         private static string GetFullName(this TypeInfo typeInfo)
             => (typeInfo.Type?.ContainingNamespace?.ToString() ?? string.Empty) + "." + GetName(typeInfo);
         
-        private static string GetNamespaceName(this INamespaceSymbol namespaceSymbol, string name)
+        private static string GetFullNamespaceString(INamespaceSymbol? ns)
         {
-            if (namespaceSymbol == null) return name; // Base case: no containing namespace
-
-            var nextName = namespaceSymbol.Name;
-            if (string.IsNullOrEmpty(nextName)) // Reached the global namespace or an unnamed namespace
-            {
-                return name;
-            }
-            // Prepend current namespace part and recurse
-            string prefix = GetNamespaceName(namespaceSymbol.ContainingNamespace, nextName);
-            return string.IsNullOrEmpty(name) ? prefix : $"{prefix}.{name}";
+            if (ns == null || ns.IsGlobalNamespace) 
+                return string.Empty;
+            
+            string parentNs = GetFullNamespaceString(ns.ContainingNamespace);
+            return string.IsNullOrEmpty(parentNs) ? ns.Name : $"{parentNs}.{ns.Name}";
         }
 
-        private static MethodNode CreateMethodNode(this IMethodSymbol symbol, MethodDeclarationSyntax declaration = null)
+        private static MethodNode CreateMethodNode(this IMethodSymbol symbol, MethodDeclarationSyntax? declaration = null)
         {
-            if (symbol == null || symbol.ContainingType == null || symbol.ContainingNamespace == null || symbol.ReturnType == null)
+            if (symbol == null || symbol.ContainingType == null || symbol.ReturnType == null) // Removed symbol.ContainingNamespace check as GetFullNamespaceString handles global
                 return null;
 
-            var fullName = GetNamespaceName(symbol.ContainingNamespace, $"{symbol.ContainingType.Name}.{symbol.Name}");
-            var args = symbol.Parameters.Select(x => (name: x.Name, type: x.Type?.ToString() ?? "unknown_type")).ToArray();
-            var returnType = symbol.ReturnType.ToString();
+            string namespaceStr = GetFullNamespaceString(symbol.ContainingNamespace);
+            string typeName = symbol.ContainingType.Name ?? string.Empty;
+            string methodName = symbol.Name ?? string.Empty;
+
+            if (string.IsNullOrEmpty(typeName) || string.IsNullOrEmpty(methodName))
+                return null; // Cannot form a valid name
+
+            var fullName = string.IsNullOrEmpty(namespaceStr) ? 
+                           $"{typeName}.{methodName}" : 
+                           $"{namespaceStr}.{typeName}.{methodName}";
+            
+            var args = symbol.Parameters.Select(x => (name: x.Name ?? string.Empty, type: x.Type?.ToString() ?? "unknown_type")).ToArray();
+            var returnType = symbol.ReturnType.ToString() ?? string.Empty; // Ensure returnType is not null
+            
+            // Ensure fullName and methodName (used as 'name' parameter for Node constructor) are not null
+            // The Node constructor now handles nulls with ?? string.Empty, but good practice here.
+            fullName = fullName ?? string.Empty;
+            methodName = methodName ?? string.Empty;
+
             return new MethodNode(fullName,
-                symbol.Name,
+                methodName, // Use the non-null methodName
                 args,
                 returnType,
                 declaration?.Modifiers.MapModifiers());
@@ -144,8 +155,7 @@ namespace PrecisionApi.Analysis // Adjusted namespace
             return triples;
         }
 
-        public static void AnalyzeTree<T>(IList<Triple> triples, SyntaxTree st, SemanticModel sem, FolderNode rootProjectFolder)
-            where T : TypeDeclarationSyntax
+        public static void AnalyzeTree(IList<Triple> triples, SyntaxTree st, SemanticModel sem, FolderNode rootProjectFolder)
         {
             if (st == null || sem == null || triples == null || rootProjectFolder == null)
                 return;
@@ -159,12 +169,10 @@ namespace PrecisionApi.Analysis // Adjusted namespace
             var fileName = GetName(filePath);
             var fileNode = new FileNode(filePath, fileName);
             
-            // GetFolderChain used to relate file to its containing folders up to the rootProjectFolder.
-            // It now requires the rootProjectFolder to correctly build relative paths if necessary.
             var folderTriples = GetFolderChain(filePath, fileNode, rootProjectFolder);
             foreach(var triple in folderTriples) { triples.Add(triple); }
             
-            var declarations = rootSyntaxNode.DescendantNodes().OfType<T>();
+            var declarations = rootSyntaxNode.DescendantNodes().OfType<TypeDeclarationSyntax>();
             foreach (var declaration in declarations)
             {
                 var symbol = sem.GetDeclaredSymbol(declaration);
