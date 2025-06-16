@@ -1,27 +1,20 @@
 using System.Text.Json;
 using Buildalyzer;
-using System.Linq;
-using Microsoft.CodeAnalysis; // Added for AdhocWorkspace, SolutionInfo, Project, etc.
-using Microsoft.Build.Logging.StructuredLogger; // Required for AnalyzerManager with solution (might be indirect via Buildalyzer)
-using Microsoft.CodeAnalysis.CSharp; // Potentially for CSharpCompilationOptions if needed later
-using System.Collections.Concurrent; // For ConcurrentBag if adapting GetAnalysisContext closely
-using System.Collections.Generic; // For List<T>
-using System.IO; // For Path operations
-using Buildalyzer.Workspaces; // Added for AddToWorkspace
+using Microsoft.CodeAnalysis;
+using System.Collections.Concurrent;
+using Buildalyzer.Workspaces;
 
-// Domain and Analysis namespaces will be needed once we integrate Extractor and Triple generation
 using PrecisionApi.Domain;
 using PrecisionApi.Analysis;
 
 namespace PrecisionApi.Services;
 
-// Helper class to hold the Roslyn workspace and project analysis results
 public class RoslynAnalysisContext : IDisposable
 {
     public AdhocWorkspace Workspace { get; }
-    public List<(Microsoft.CodeAnalysis.Project RoslynProject, IAnalyzerResult BuildalyzerResult)> Projects { get; }
+    public List<(Project RoslynProject, IAnalyzerResult BuildalyzerResult)> Projects { get; }
 
-    public RoslynAnalysisContext(AdhocWorkspace workspace, List<(Microsoft.CodeAnalysis.Project, IAnalyzerResult)> projects)
+    public RoslynAnalysisContext(AdhocWorkspace workspace, List<(Project, IAnalyzerResult)> projects)
     {
         Workspace = workspace;
         Projects = projects;
@@ -36,157 +29,171 @@ public class RoslynAnalysisContext : IDisposable
 
 public class AnalysisService
 {
+    private ArtifactService? _artifactService;
     public async Task<JsonDocument> AnalyzeCodebaseAsync(string extractedCodebasePath)
     {
-        List<string> projectFilePaths = new();
-        string? solutionFilePath = null;
-
-        // 1. Scan extractedCodebasePath for .sln or .csproj files.
+        _artifactService = new ArtifactService(extractedCodebasePath);
         try
         {
-            var solutionFiles = Directory.GetFiles(extractedCodebasePath, "*.sln", SearchOption.AllDirectories);
-            if (solutionFiles.Any())
+            List<string> projectFilePaths = new();
+            string? solutionFilePath = null;
+
+            // 1. Scan extractedCodebasePath for .sln or .csproj files.
+            try
             {
-                solutionFilePath = solutionFiles.OrderBy(f => f.Count(c => c == Path.DirectorySeparatorChar || c == Path.AltDirectorySeparatorChar))
-                                                .ThenBy(f => f)
-                                                .First();
-                Console.WriteLine($"Found solution file: {solutionFilePath}");
-            }
-            else
-            {
-                var csharpProjectFiles = Directory.GetFiles(extractedCodebasePath, "*.csproj", SearchOption.AllDirectories);
-                if (csharpProjectFiles.Any())
+                var solutionFiles = Directory.GetFiles(extractedCodebasePath, "*.sln", SearchOption.AllDirectories);
+                if (solutionFiles.Any())
                 {
-                    projectFilePaths.AddRange(csharpProjectFiles);
-                    Console.WriteLine($"Found project files: {string.Join(", ", projectFilePaths)}"); 
+                    solutionFilePath = solutionFiles.OrderBy(f => f.Count(c => c == Path.DirectorySeparatorChar || c == Path.AltDirectorySeparatorChar))
+                                                    .ThenBy(f => f)
+                                                    .First();
+                    Console.WriteLine($"Found solution file: {solutionFilePath}");
                 }
                 else
                 {
-                    return JsonDocument.Parse(JsonSerializer.Serialize(new { message = "No .sln or .csproj files found." }));
+                    var csharpProjectFiles = Directory.GetFiles(extractedCodebasePath, "*.csproj", SearchOption.AllDirectories);
+                    if (csharpProjectFiles.Any())
+                    {
+                        projectFilePaths.AddRange(csharpProjectFiles);
+                        Console.WriteLine($"Found project files: {string.Join(", ", projectFilePaths)}");
+                    }
+                    else
+                    {
+                        return JsonDocument.Parse(JsonSerializer.Serialize(new { message = "No .sln or .csproj files found." }));
+                    }
                 }
             }
-        }
-        catch (Exception ex)
-        {
-            Console.WriteLine($"Error during file discovery: {ex.Message}");
-            return JsonDocument.Parse(JsonSerializer.Serialize(new { message = $"Error during file discovery: {ex.Message}", error = ex.ToString() }));
-        }
-
-        // 2. Initialize Buildalyzer.AnalyzerManager & 3. Get Roslyn workspace.
-        IAnalyzerManager analyzerManager;
-        if (!string.IsNullOrEmpty(solutionFilePath))
-        {
-            analyzerManager = new AnalyzerManager(solutionFilePath);
-        }
-        else
-        {
-            analyzerManager = new AnalyzerManager(); 
-            // If using an empty manager, projects need to be added individually if that's the intended workflow
-            // For now, assuming if projectFilePaths is populated, they will be used directly by GetRoslynAnalysisContext
-        }
-
-        RoslynAnalysisContext? roslynContext = null;
-        try
-        {
-            // If solutionFilePath is null, pass projectFilePaths to GetRoslynAnalysisContext
-            roslynContext = GetRoslynAnalysisContext(analyzerManager, string.IsNullOrEmpty(solutionFilePath) ? projectFilePaths : null);
-            if (roslynContext == null || !roslynContext.Projects.Any())
+            catch (Exception ex)
             {
-                return JsonDocument.Parse(JsonSerializer.Serialize(new { message = "Failed to analyze projects or no projects found for analysis." }));
+                Console.WriteLine($"Error during file discovery: {ex.Message}");
+                _artifactService.Log("Error during file discovery.", new { exceptionMessage = ex.Message, exception = ex.ToString() });
+                return JsonDocument.Parse(JsonSerializer.Serialize(new { message = $"Error during file discovery: {ex.Message}", error = ex.ToString() }));
             }
-            Console.WriteLine($"Roslyn context created with {roslynContext.Projects.Count} project(s).");
 
-            // ADDED: Triple collection logic starts here
-            var allTriples = new List<Triple>();
-            Console.WriteLine($"Starting project analysis for {roslynContext.Projects.Count} project(s).");
-            foreach (var (roslynProject, buildalyzerResult) in roslynContext.Projects)
+            // 2. Initialize Buildalyzer.AnalyzerManager & 3. Get Roslyn workspace.
+            IAnalyzerManager analyzerManager;
+            if (!string.IsNullOrEmpty(solutionFilePath))
             {
-                Console.WriteLine($"Analyzing project: {roslynProject.Name} at {roslynProject.FilePath}");
-                if (string.IsNullOrEmpty(roslynProject.FilePath))
-                {
-                    Console.WriteLine($"Skipping project with no FilePath: {roslynProject.Name}");
-                    continue;
-                }
+                analyzerManager = new AnalyzerManager(solutionFilePath);
+                _artifactService.Log("AnalyzerManager initialized with solution file.", new { solutionFilePath });
+            }
+            else
+            {
+                analyzerManager = new AnalyzerManager();
+                _artifactService.Log("AnalyzerManager initialized without a solution file (empty). Will analyze discovered project files.");
+                // If using an empty manager, projects need to be added individually if that's the intended workflow
+                // For now, assuming if projectFilePaths is populated, they will be used directly by GetRoslynAnalysisContext
+            }
 
-                var projectRootPath = Path.GetDirectoryName(roslynProject.FilePath);
-                if (string.IsNullOrEmpty(projectRootPath))
+            RoslynAnalysisContext? roslynContext = null;
+            try
+            {
+                // If solutionFilePath is null, pass projectFilePaths to GetRoslynAnalysisContext
+                roslynContext = GetRoslynAnalysisContext(analyzerManager, string.IsNullOrEmpty(solutionFilePath) ? projectFilePaths : null);
+                if (roslynContext == null || !roslynContext.Projects.Any())
                 {
-                    Console.WriteLine($"Skipping project with invalid FilePath (no directory): {roslynProject.FilePath}");
-                    continue;
+                    return JsonDocument.Parse(JsonSerializer.Serialize(new { message = "Failed to analyze projects or no projects found for analysis." }));
                 }
+                Console.WriteLine($"Roslyn context created with {roslynContext.Projects.Count} project(s).");
 
-                var projectFolderNode = new FolderNode 
+                // ADDED: Triple collection logic starts here
+                var allTriples = new List<Triple>();
+                Console.WriteLine($"Starting project analysis for {roslynContext.Projects.Count} project(s).");
+                foreach (var (roslynProject, buildalyzerResult) in roslynContext.Projects)
                 {
-                    FullName = projectRootPath, 
-                    Name = Path.GetFileName(projectRootPath) ?? projectRootPath 
+                    Console.WriteLine($"Analyzing project: {roslynProject.Name} at {roslynProject.FilePath}");
+                    if (string.IsNullOrEmpty(roslynProject.FilePath))
+                    {
+                        Console.WriteLine($"Skipping project with no FilePath: {roslynProject.Name}");
+                        continue;
+                    }
+
+                    var projectRootPath = Path.GetDirectoryName(roslynProject.FilePath);
+                    if (string.IsNullOrEmpty(projectRootPath))
+                    {
+                        Console.WriteLine($"Skipping project with invalid FilePath (no directory): {roslynProject.FilePath}");
+                        continue;
+                    }
+
+                    var projectFolderNode = new FolderNode
+                    {
+                        FullName = projectRootPath,
+                        Name = Path.GetFileName(projectRootPath) ?? projectRootPath
+                    };
+                    projectFolderNode.SetPrimaryKey(); // Call base SetPrimaryKey after properties are set
+
+                    var compilation = await roslynProject.GetCompilationAsync();
+                    if (compilation == null)
+                    {
+                        Console.WriteLine($"Could not get compilation for project: {roslynProject.Name}");
+                        continue;
+                    }
+
+                    Console.WriteLine($"Got compilation for {roslynProject.Name}. Analyzing {compilation.SyntaxTrees.Count()} syntax trees.");
+                    foreach (var syntaxTree in compilation.SyntaxTrees)
+                    {
+                        var semanticModel = compilation.GetSemanticModel(syntaxTree);
+                        try
+                        {
+                            Extractor.AnalyzeTree(allTriples, syntaxTree, semanticModel, projectFolderNode);
+                            Console.WriteLine($"Analyzed syntax tree: {syntaxTree.FilePath ?? "in-memory tree"} for project {roslynProject.Name}. Current triples count: {allTriples.Count}");
+                        }
+                        catch (Exception ex)
+                        {
+                            Console.WriteLine($"Error analyzing syntax tree {syntaxTree.FilePath ?? "in-memory tree"} in project {roslynProject.Name}: {ex.Message}\n{ex.StackTrace}");
+                            // Continue with the next syntax tree
+                        }
+                    }
+                }
+                Console.WriteLine($"Finished project analysis. Total triples collected: {allTriples.Count}");
+                // ADDED: Triple collection logic ends here
+
+                // Deduplicate Triples
+                var deduplicatedTriples = DeduplicateTriples(allTriples);
+                Console.WriteLine($"Triples count after deduplication: {deduplicatedTriples.Count}");
+
+                // Transform Triples to JSON structure
+                var (nodes, edges) = TransformTriplesToJsonObjects(deduplicatedTriples);
+                Console.WriteLine($"Transformed to {nodes.Count} nodes and {edges.Count} edges.");
+
+                await System.Threading.Tasks.Task.Delay(100); // Qualified Task.Delay
+
+                var finalResult = new
+                {
+                    message = "Analysis complete. Triples extracted, deduplicated, and transformed.", // Updated message
+                    sourcePath = extractedCodebasePath,
+                    discoveredSolution = solutionFilePath,
+                    discoveredProjects = projectFilePaths,
+                    analyzedProjectCount = roslynContext?.Projects.Count ?? 0,
+                    collectedTriplesCount = allTriples.Count,
+                    deduplicatedTriplesCount = deduplicatedTriples.Count,
+                    nodes = nodes, // Use transformed nodes
+                    edges = edges,  // Use transformed edges
+                    artifact = _artifactService.Artifact
                 };
-                projectFolderNode.SetPrimaryKey(); // Call base SetPrimaryKey after properties are set
 
-                var compilation = await roslynProject.GetCompilationAsync();
-                if (compilation == null)
-                {
-                    Console.WriteLine($"Could not get compilation for project: {roslynProject.Name}");
-                    continue;
-                }
-
-                Console.WriteLine($"Got compilation for {roslynProject.Name}. Analyzing {compilation.SyntaxTrees.Count()} syntax trees.");
-                foreach (var syntaxTree in compilation.SyntaxTrees)
-                {
-                    var semanticModel = compilation.GetSemanticModel(syntaxTree);
-                    try
-                    {
-                        Extractor.AnalyzeTree(allTriples, syntaxTree, semanticModel, projectFolderNode);
-                        Console.WriteLine($"Analyzed syntax tree: {syntaxTree.FilePath ?? "in-memory tree"} for project {roslynProject.Name}. Current triples count: {allTriples.Count}");
-                    }
-                    catch (Exception ex)
-                    {
-                        Console.WriteLine($"Error analyzing syntax tree {syntaxTree.FilePath ?? "in-memory tree"} in project {roslynProject.Name}: {ex.Message}\n{ex.StackTrace}");
-                        // Continue with the next syntax tree
-                    }
-                }
+                return JsonDocument.Parse(JsonSerializer.Serialize(finalResult)); // Use finalResult
             }
-            Console.WriteLine($"Finished project analysis. Total triples collected: {allTriples.Count}");
-            // ADDED: Triple collection logic ends here
-
-            // Deduplicate Triples
-            var deduplicatedTriples = DeduplicateTriples(allTriples);
-            Console.WriteLine($"Triples count after deduplication: {deduplicatedTriples.Count}");
-
-            // Transform Triples to JSON structure
-            var (nodes, edges) = TransformTriplesToJsonObjects(deduplicatedTriples);
-            Console.WriteLine($"Transformed to {nodes.Count} nodes and {edges.Count} edges.");
-
-            await System.Threading.Tasks.Task.Delay(100); // Qualified Task.Delay
-
-            var finalResult = new 
+            catch (Exception ex)
             {
-                message = "Analysis complete. Triples extracted, deduplicated, and transformed.", // Updated message
-                sourcePath = extractedCodebasePath,
-                discoveredSolution = solutionFilePath,
-                discoveredProjects = projectFilePaths,
-                analyzedProjectCount = roslynContext?.Projects.Count ?? 0,
-                collectedTriplesCount = allTriples.Count, 
-                deduplicatedTriplesCount = deduplicatedTriples.Count, 
-                nodes = nodes, // Use transformed nodes
-                edges = edges  // Use transformed edges
-            };
-            
-            return JsonDocument.Parse(JsonSerializer.Serialize(finalResult)); // Use finalResult
-        }
-        catch (Exception ex)
-        {
-            Console.WriteLine($"Error creating Roslyn context: {ex.Message}");
-            return JsonDocument.Parse(JsonSerializer.Serialize(new { message = $"Error initializing Roslyn analysis: {ex.Message}", error = ex.ToString() }));
+                Console.WriteLine($"Error creating Roslyn context: {ex.Message}");
+                _artifactService.Log("Error creating Roslyn context.", new { exceptionMessage = ex.Message, exception = ex.ToString() });
+                return JsonDocument.Parse(JsonSerializer.Serialize(new { message = $"Error initializing Roslyn analysis: {ex.Message}", error = ex.ToString() }));
+            }
+            finally
+            {
+                roslynContext?.Dispose(); // Ensure workspace is disposed
+            }
         }
         finally
         {
-            roslynContext?.Dispose(); // Ensure workspace is disposed
+            _artifactService?.Dispose();
         }
     }
 
-    // Adapted from Strazh.Analysis.Analyzer.GetAnalysisContext
     private RoslynAnalysisContext? GetRoslynAnalysisContext(IAnalyzerManager manager, List<string>? projectPathsOverride = null)
     {
+        _artifactService?.Log("Getting Roslyn analysis context.", new { HasProjectPathsOverride = projectPathsOverride?.Any() ?? false });
         if (manager == null) throw new ArgumentNullException(nameof(manager));
 
         var projectResults = new ConcurrentBag<(Microsoft.CodeAnalysis.Project, IAnalyzerResult)>();
@@ -198,6 +205,7 @@ public class AnalysisService
         {
             // Analyze specified project files if no solution was found/used
             buildalyzerResults = new List<IAnalyzerResult>();
+            _artifactService?.Log("Analyzing specified project files.", new { ProjectCount = projectPathsOverride.Count });
             foreach (var projectPath in projectPathsOverride)
             {
                 Console.WriteLine($"Building project (override): {Path.GetFileName(projectPath)} - starting");
@@ -218,6 +226,7 @@ public class AnalysisService
         {
             // Analyze all projects in the solution
             Console.WriteLine("Building projects from solution - starting");
+            _artifactService?.Log("Analyzing all projects in the solution.", new { SolutionFile = manager.SolutionFilePath });
             buildalyzerResults = manager.Projects.Values
                 .Select(p =>
                 {
@@ -229,6 +238,7 @@ public class AnalysisService
                 .Where(x => x != null && x.Succeeded)
                 .ToList();
             Console.WriteLine($"Building projects from solution - finished. {buildalyzerResults.Count} succeeded.");
+            _artifactService?.Log("Finished building projects from solution.", new { SucceededCount = buildalyzerResults.Count });
 
             SolutionInfo solutionInfo = SolutionInfo.Create(SolutionId.CreateNewId(), VersionStamp.Default, manager.SolutionFilePath);
             workspace.AddSolution(solutionInfo);
@@ -238,12 +248,14 @@ public class AnalysisService
         else
         {
              Console.WriteLine("No solution or project overrides provided to GetRoslynAnalysisContext.");
+             _artifactService?.Log("No solution or project overrides provided.");
             return null; // No projects to analyze
         }
 
         if (!buildalyzerResults.Any())
         {
             Console.WriteLine("No projects successfully built by Buildalyzer.");
+            _artifactService?.Log("No projects were successfully built by Buildalyzer.");
             workspace.Dispose();
             return null;
         }
@@ -262,7 +274,7 @@ public class AnalysisService
                 continue;
             }
 
-            Microsoft.CodeAnalysis.Project? roslynProject = null;
+            Project? roslynProject = null;
             try
             {
                 roslynProject = result.AddToWorkspace(workspace, true);
