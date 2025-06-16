@@ -47,7 +47,7 @@ public class AnalysisService
                     solutionFilePath = solutionFiles.OrderBy(f => f.Count(c => c == Path.DirectorySeparatorChar || c == Path.AltDirectorySeparatorChar))
                                                     .ThenBy(f => f)
                                                     .First();
-                    Console.WriteLine($"Found solution file: {solutionFilePath}");
+                    _artifactService.Log($"Found solution file: {solutionFilePath}");
                 }
                 else
                 {
@@ -55,7 +55,7 @@ public class AnalysisService
                     if (csharpProjectFiles.Any())
                     {
                         projectFilePaths.AddRange(csharpProjectFiles);
-                        Console.WriteLine($"Found project files: {string.Join(", ", projectFilePaths)}");
+                        _artifactService.Log($"Found project files: {string.Join(", ", projectFilePaths)}");
                     }
                     else
                     {
@@ -65,7 +65,6 @@ public class AnalysisService
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"Error during file discovery: {ex.Message}");
                 _artifactService.Log("Error during file discovery.", new { exceptionMessage = ex.Message, exception = ex.ToString() });
                 return JsonDocument.Parse(JsonSerializer.Serialize(new { message = $"Error during file discovery: {ex.Message}", error = ex.ToString() }));
             }
@@ -81,21 +80,18 @@ public class AnalysisService
             {
                 analyzerManager = new AnalyzerManager();
                 _artifactService.Log("AnalyzerManager initialized without a solution file (empty). Will analyze discovered project files.");
-                // If using an empty manager, projects need to be added individually if that's the intended workflow
-                // For now, assuming if projectFilePaths is populated, they will be used directly by GetRoslynAnalysisContext
             }
 
             // 4. Get Roslyn context.
             RoslynAnalysisContext? roslynContext = null;
             try
             {
-                // If solutionFilePath is null, pass projectFilePaths to GetRoslynAnalysisContext
                 roslynContext = GetRoslynAnalysisContext(analyzerManager, string.IsNullOrEmpty(solutionFilePath) ? projectFilePaths : null);
                 if (roslynContext == null || !roslynContext.Projects.Any())
                 {
                     return JsonDocument.Parse(JsonSerializer.Serialize(new { message = "Failed to analyze projects or no projects found for analysis." }));
                 }
-                Console.WriteLine($"Roslyn context created with {roslynContext.Projects.Count} project(s).");
+                _artifactService.Log($"Roslyn context created with {roslynContext.Projects.Count} project(s).");
 
                 var allTriples = await CollectTriplesAsync(roslynContext);
 
@@ -127,7 +123,6 @@ public class AnalysisService
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"Error creating Roslyn context: {ex.Message}");
                 _artifactService.Log("Error creating Roslyn context.", new { exceptionMessage = ex.Message, exception = ex.ToString() });
                 return JsonDocument.Parse(JsonSerializer.Serialize(new { message = $"Error initializing Roslyn analysis: {ex.Message}", error = ex.ToString() }));
             }
