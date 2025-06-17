@@ -2,6 +2,10 @@ using PrecisionApi.Services;
 
 var builder = WebApplication.CreateBuilder(args);
 
+builder.WebHost.ConfigureKestrel(serverOptions => {
+    serverOptions.Limits.MaxRequestBodySize = 1024 * 1024 * 100; // 100MB
+});
+
 builder.Services.AddScoped<AnalysisService>();
 
 builder.Services.AddControllers();
@@ -16,7 +20,7 @@ if (app.Environment.IsDevelopment())
     app.UseSwaggerUI();
 }
 
-app.UseHttpsRedirection();
+// app.UseHttpsRedirection();
 
 app.UseRouting();
 

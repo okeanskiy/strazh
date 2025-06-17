@@ -27,7 +27,8 @@ from neo4j_graphrag.indexes import retrieve_vector_index_info
 from langchain.docstore.document import Document
 from langchain_neo4j import Neo4jVector
 
-TEST_FILE_PATH = r"C:\Users\conta\Desktop\csharp-codebase-tests\SystemUnderTest2.zip"
+# TEST_FILE_PATH = r"C:\Users\conta\Desktop\csharp-codebase-tests\SystemUnderTest2.zip"
+TEST_FILE_PATH = r"C:\Users\conta\Desktop\csharp-codebase-tests\nopCommerce-develop.zip"
 TEST_ENDPOINT = "http://localhost:5014/api/Analysis/upload"
 
 INDEX_NAME = "file-vector-index"
@@ -93,33 +94,32 @@ def clear_database(driver: GraphDatabase.driver):
 async def populate_database(result: AnalysisResult, driver: GraphDatabase.driver):
     clear_database(driver)
 
-    def node_text(node: Node):
-        return f"Label: {node.label}\nName: {node.name}\nFull Name: {node.full_name}"
+    neo4j_nodes = [
+        Neo4jNode(
+            id=node.id,
+            label=node.label,
+            properties={
+                "name": node.name,
+                "fullName": node.full_name,
+                "analysisId": node.analysis_id
+            },
+        )
+        for node in result.nodes
+    ]
 
-    documents = []
-    for node in result.nodes:
-        if node.label == "File":
-            documents.append(Document(
-                page_content=node_text(node),
-                metadata={"id": node.id, "label": node.label, "name": node.name, "fullName": node.full_name}
-            ))
+    neo4j_relationships = [
+        Neo4jRelationship(
+            source_id=edge.source,
+            target_id=edge.target,
+            type=edge.type,
+        )
+        for edge in result.edges
+    ]
 
-    from langchain_openai import OpenAIEmbeddings
-    embedder = OpenAIEmbeddings(model="text-embedding-3-small", dimensions=DIMENSIONS)
-
-    db = Neo4jVector.from_documents(
-        documents, embedder, url="neo4j+ssc://33c68691.databases.neo4j.io", username="neo4j", password="uPKr5GehtVkbhE7BOgByr-2ESZ3SLicvQH9PTcCxc48")
-
-    query = "math"
-    docs_with_score = db.similarity_search_with_score(query)
-
-    print("Retrieved documents:")
-    for index, result in enumerate(docs_with_score):
-        print(f"Document {index}:")
-        print(f"  Score: {result[1]}")
-        print(f"  Metadata: {result[0].metadata}")
-        print(f"  Page Content:\n{result[0].page_content}")
-        print("-" * 50)
+    graph = Neo4jGraph(nodes=neo4j_nodes, relationships=neo4j_relationships)
+    writer = Neo4jWriter(driver, database=DATABASE)
+    await writer.write_graph(graph)
+    print(f"Successfully populated database with {len(neo4j_nodes)} nodes and {len(neo4j_relationships)} relationships.")
 
 def main():
     driver = GraphDatabase.driver(
@@ -127,21 +127,25 @@ def main():
         auth=("neo4j", "uPKr5GehtVkbhE7BOgByr-2ESZ3SLicvQH9PTcCxc48")
     )
 
-    response = upload_zip_file(TEST_FILE_PATH, TEST_ENDPOINT)
-    print(f"Status Code: {response.status_code}")
-    if response.ok:
-        try:
-            analysis_result = AnalysisResult.model_validate_json(response.text)
-            print("Successfully parsed analysis result.")
-            print(f"Found {len(analysis_result.nodes)} nodes and {len(analysis_result.edges)} edges.")
+    try:
+        response = upload_zip_file(TEST_FILE_PATH, TEST_ENDPOINT)
+        print(f"Status Code: {response.status_code}")
+        if response.ok:
+            try:
+                analysis_result = AnalysisResult.model_validate_json(response.text)
+                print("Successfully parsed analysis result.")
+                print(f"Found {len(analysis_result.nodes)} nodes and {len(analysis_result.edges)} edges.")
 
-            asyncio.run(populate_database(analysis_result, driver))
-        except Exception as e:
-            print(f"Failed to parse response: {e}")
+                asyncio.run(populate_database(analysis_result, driver))
+                print("Populated database")
+            except Exception as e:
+                print(f"Failed to parse response: {e}")
 
-    print("Populated database")
+        else:
+            print(f"Failed to upload file: {response.text}")
 
-    driver.close()
+    finally:
+        driver.close()
 
 
 if __name__ == "__main__":
